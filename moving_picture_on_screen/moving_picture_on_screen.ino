@@ -19,9 +19,6 @@ char *OTA_PASS = "1234";
 #include "driver/rtc_io.h"
 #include <SPIFFS.h>
 #include <FS.h>
-#include <TJpg_Decoder.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ILI9341.h>
 #include "buzzer.h"
 #include "camera_pins.h"
 
@@ -29,18 +26,62 @@ char *OTA_PASS = "1234";
 #include "credentials.h"
 #include "WiFi_Manager.h"
 #include <ArduinoOTA.h>
+#include "SPI.h"
+#include <TJpg_Decoder.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+
+
+#include "Fonts/FreeSans9pt7b.h"
+#include "Fonts/FreeSans12pt7b.h"
+#include "Fonts/FreeSans18pt7b.h"
+
+#include <Fonts/FreeSansBold9pt7b.h> 
+#include <Fonts/FreeSansBold12pt7b.h> 
+#include <Fonts/FreeSansBold18pt7b.h> 
+
+#include <Fonts/FreeMono9pt7b.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
+
+#include <Fonts/FreeMono12pt7b.h>
+#include <Fonts/FreeMonoBold12pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+
+#define SCREEN_MOSI 13 
+#define SCREEN_SCK 15
+#define SCREEN_MISO -1 // NOT NEEDED
+#define SCREEN_CS 2
+
+/* Pins 13, 14, 15 are connected to the ESP32's internal flash memory on ESP32-CAM. Using them for SPI can cause conflicts.*/
 
 // ---------- TFT Pins ----------
-#define TFT_CS   2
-#define TFT_DC   12
-#define TFT_RST  14
-#define TFT_MOSI 13
-#define TFT_CLK  15
-#define TFT_LED  4   // optional backlight
+#define TFT_MOSI 16
+#define TFT_CLK  14 
+#define TFT_CS   12   // GPIO12 - Might work with SD card disabled
+#define TFT_DC   2   // GPIO2 - Boot pin, handle carefully
+#define TFT_RST  15 // 15 might demand a pulldown resistor to be low at boot
+#define TFT_LED  -4   //  backlight is connected to Vcc through a 120ohm res
+#define TFT_MISO -2  // no need to read anything to the screen
 
-// ---------- TFT + Buzzer ----------
-Adafruit_ILI9341 LCD = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_RST);
-Buzzer buzzer(15);  // reuse LED pin if no dedicated buzzer pin
+uint8_t flash = 4;
+
+Buzzer buzzer(15);  //  LED pin if no dedicated buzzer pin
+
+// Create custom SPI instance on HSPI with your pin remapping
+SPIClass* TFT_SPI = NULL;
+
+// Declare LCD pointer - we'll initialize it after SPI is set up
+//Adafruit_ILI9341* LCD = NULL;
+
+//SPIClass TFT_SPI(HSPI);
+
+
+// ---------- TFT ----------
+  Adafruit_ILI9341 LCD = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST); // hardware spi
+//Adafruit_ILI9341 LCD = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_RST); // this constructs images very slowly
+// Customize the Adafruit_ILI9341 constructor to use hardware SPI
+
 
 // ---------- Video Streaming Globals ----------
 bool isStreaming = true;
@@ -90,24 +131,142 @@ uint64_t now_now_ms = 0;
 // ----------------------------------------------------------
 void setup() {
   delay(100);
-  Serial.begin(115200);
+    // ====== STEP 1: Handle strapping pins FIRST ======
+
+// GPIO0 must be LOW at boot for normal operation
+  pinMode(0, INPUT_PULLDOWN);  // If using as TFT_RST
+  delay(10);
+  
+  // GPIO2 also needs care
+  pinMode(2, INPUT_PULLDOWN);
+  delay(10);
+  
+  // GPIO12 if SD card not used
+  pinMode(12, INPUT_PULLDOWN);
+  delay(10);
+  
+  // GPIO15 if not using, keep it LOW
+  pinMode(15, INPUT_PULLDOWN);
+  delay(10);
+
+//Serial.begin(115200);
+   // ====== CRITICAL: Fix strapping/flash pins BEFORE anything else ======
+  // GPIO14 is connected to flash - set as input before using as TFT_RST
+  //pinMode(14, INPUT); //  TFT_RST
+  //delay(10);
+
+ // pinMode(0, INPUT_PULLDOWN); // TFT_CLK at boot
+
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   delay(500);
   // Optional: backlight ON
   //pinMode(TFT_LED, OUTPUT);
   //digitalWrite(TFT_LED, HIGH);
 
+ /*
   // TFT Init
-  LCD.begin();
-  LCD.setRotation(3);
-  LCD.fillScreen(ILI9341_BLACK);
-  LCD.setTextColor(ILI9341_CYAN);
-  LCD.setTextSize(2);
-  LCD.setCursor(10, 20);
-  LCD.println("Caviscope Video");
-  LCD.setTextSize(1);
-  LCD.println("Initializing...");
+   // Initialize custom SPI first
+  TFT_SPI.begin(TFT_CLK, TFT_MISO, TFT_MOSI, TFT_CS);
+  TFT_SPI.setFrequency(26000000); // 26MHz
+  
+  
+  // Then initialize display
 
+ // Initialize the custom SPI instance
+  TFT_SPI = new SPIClass(HSPI);
+  
+  // Begin SPI with custom pins BEFORE initializing the display
+  TFT_SPI->begin(TFT_CLK, TFT_MISO, TFT_MOSI, TFT_CS);
+  
+  // Set SPI frequency for optimal performance
+  // ILI9341 can handle up to ~40MHz, but 26-30MHz is safe for most wiring
+  TFT_SPI->setFrequency(26000000);  // 26MHz
+  
+  // You can also set SPI mode (ILI9341 uses mode 0)
+  TFT_SPI->setDataMode(SPI_MODE0);
+  /*
+  // Set bit order (MSB first is standard)
+  TFT_SPI->setBitOrder(MSBFIRST);
+  
+  // Initialize the LCD with the custom SPI instance
+  LCD.setSPI(*TFT_SPI);
+  */
+
+  //  LCD.begin(26000000);
+
+
+  // Buzzer
+  buzzer.begin();
+  xTaskCreatePinnedToCore(BuzzingTask, "BuzzingCheck", 4096, NULL, 1, NULL, 1);
+  delay(100);
+  buzzer.beep(1,50,0);
+
+
+  // ====== STEP 2: Initialize camera BEFORE SPI ======
+  Serial.println("Initializing camera FIRST...");
+  configure_camera();
+  Serial.println("Camera initialized successfully!");
+  
+  // ====== STEP 3: Now initialize SPI and TFT ======
+  Serial.println("Initializing SPI...");
+  
+ 
+ // Configure hardware SPI globally
+  SPI.begin(TFT_CLK, TFT_MISO, TFT_MOSI, TFT_CS);
+  SPI.setFrequency(26000000);  // Max speed
+  
+  // Initialize display - it will use the hardware SPI even though we used software constructor
+  LCD.begin();
+  
+  // Override the SPI speed
+  LCD.setSPISpeed(26000000);
+
+  //LCD.begin();
+  LCD.setRotation(3);
+  LCD.fillScreen(ILI9341_NAVY);
+
+   LCD.setFont(&FreeSansBold18pt7b);
+    LCD.setCursor(5, 40); LCD.setTextColor(ILI9341_YELLOW);
+    LCD.print("MADE IN UGANDA");
+    delay(1000);
+    LCD.setFont(); LCD.setTextColor(ILI9341_WHITE);
+    LCD.setCursor(40, 60); LCD.print("Running Flag Speed-Test..."); 
+  
+ // UGANDA FLAG SPEED TEST
+  uint32_t test_start = millis();
+  
+     for(int i=0; i<=320; i+=2){
+        LCD.fillRect(0, 180, i, 20, ILI9341_BLACK);
+       } 
+
+    for(int i=0; i<=320; i+=2){
+      LCD.fillRect(0, 200, i, 20, ILI9341_YELLOW);
+    }  
+    
+    for(int i=0; i<=320; i+=2){
+      LCD.fillRect(0, 220, i, 20, ILI9341_RED);
+    } 
+    
+    uint32_t test_stop = millis();
+
+    float test_duration = ((float)test_stop - (float)test_start)/1000.0; // convert to seconds
+
+    LCD.setFont(&FreeSans12pt7b);
+    LCD.setCursor(5, 130); LCD.setTextColor(ILI9341_CYAN);
+    LCD.print("Test Duration: "); LCD.print(test_duration); LCD.print(" seconds");
+
+
+    delay(5000);
+    LCD.fillScreen(ILI9341_BLACK);
+    LCD.setTextColor(ILI9341_GREEN);
+    LCD.setFont(&FreeSans12pt7b);
+    LCD.setTextSize(1);
+    LCD.setCursor(20, 20); LCD.println("Caviscope Video Device");
+  //  LCD.drawHLine
+    
+    LCD.setFont(&FreeSans9pt7b);
+     LCD.setCursor(40, 50); LCD.println("Initializing...");
+     delay(1000);
 
   // SPIFFS (optional, for still capture)
   if (!ensureSPIFFS()) {
@@ -116,36 +275,56 @@ void setup() {
     // Continue without SPIFFS for video streaming
   }
 
+  LCD.setCursor(20, 100); LCD.println("> File System Initialized!");
+  delay(1000);
+
   // Camera - Configure for fastest capture
   configure_camera();
+  LCD.setCursor(20, 130); LCD.println("> Camera Initialized!");
+  delay(1000);
 
-  // Buzzer
-  buzzer.begin();
-  xTaskCreatePinnedToCore(BuzzingTask, "BuzzingCheck", 2048, NULL, 1, NULL, 1);
 
   // JPEG Decoder for streaming
-  TJpgDec.setCallback(tft_output);
-  TJpgDec.setJpgScale(1);  // Full resolution for better quality video
-  
+   TJpgDec.setCallback(tft_output);
+ // TJpgDec.setJpgScale(1);  // Full resolution for better quality video
+  LCD.setCursor(20, 160); LCD.println("> JPG CallBack Set!");
+  delay(1000);
+
+  // Optimize TJpgDec settings
+   TJpgDec.setJpgScale(0);  // No scaling for fastest decode
+   TJpgDec.setSwapBytes(false);  // Match your display's byte order
+
   // Allocate buffer for JPEG decoding
   jpgBufferSize = 1024 * 32;  // 32KB buffer for JPEG chunks
   jpgBuffer = (uint8_t*)malloc(jpgBufferSize);
-  
+  LCD.setCursor(20, 190); LCD.println("> Buffer Size Set to 32kB!");
+  delay(1000);
+
+
   if (!jpgBuffer) {
     error_log("Buffer alloc failed!", ILI9341_RED);
     delay(2000);
     ESP.restart();
   }
 
-  LCD.fillScreen(ILI9341_BLACK);
-  error_log("Video Streaming Ready", ILI9341_GREEN);
-  
+  LCD.fillScreen(ILI9341_BLACK); 
+  LCD.setFont(&FreeSans12pt7b);
+
+  //error_log("", ILI9341_GREEN);
+  LCD.setCursor(10, 100); LCD.println("Video Streaming Ready!");
+  delay(1000);
+
+
   // Start video streaming immediately
   isStreaming = true;
 
   now_now_ms = esp_timer_get_time()/1000ULL;
   initialize_radio_on_wifi();
   //initializeOTA();
+      LCD.setFont(&FreeSans9pt7b);
+
+    buzzer.beep(2,50,50);
+
 }
 
 // ----------------------------------------------------------
@@ -206,6 +385,26 @@ void loop() {
   
   ArduinoOTA.handle();
 
+}
+
+void checkSPISpeed() {
+  Serial.println("Testing SPI speed...");
+  
+  // Test fillScreen speed
+  uint32_t start = millis();
+  for(int i = 0; i < 10; i++) {
+    LCD.fillScreen(ILI9341_RED);
+    LCD.fillScreen(ILI9341_BLUE);
+    LCD.fillScreen(ILI9341_GREEN);
+  }
+  uint32_t end = millis();
+  
+  float timePerFill = (end - start) / 30.0;  // 30 fill operations
+  float pixelsPerSecond = (320.0 * 240.0) / (timePerFill / 1000.0);
+  
+  Serial.printf("Fill time: %.1f ms per screen\n", timePerFill);
+  Serial.printf("Pixel rate: %.1f million pixels/sec\n", pixelsPerSecond / 1000000.0);
+  Serial.printf("Estimated SPI speed: %.1f MHz\n", (pixelsPerSecond * 16.0) / 1000000.0); // 16 bits per pixel
 }
 
 char IP_Addr[50] = "NULL";
@@ -412,7 +611,7 @@ void configure_camera() {
 
   // Optimize for video streaming - faster frame rate
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_QVGA;  // 320x240 - matches display and faster
+    config.frame_size = FRAMESIZE_QVGA;  // FRAMESIZE_QVGA // 320x240 - matches display and faster
     config.jpeg_quality = 12;            // Balanced quality/speed
     config.fb_count = 2;                 // Double buffer for smoother streaming
     config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -459,6 +658,7 @@ void configure_camera() {
   }
 }
 
+
 // ----------------------------------------------------------
 // JPEG Decoder Output Callback
 // ----------------------------------------------------------
@@ -478,6 +678,8 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) 
   LCD.endWrite();
   return true;
 }
+
+
 
 // ----------------------------------------------------------
 // SPIFFS Helpers (for optional still capture)
@@ -554,17 +756,16 @@ void updateFPS() {
 // Display Statistics
 // ----------------------------------------------------------
 void displayStats() {
-  // Show FPS in corner
-  LCD.fillRect(260, 0, 60, 20, ILI9341_BLACK);
-  LCD.setTextColor(ILI9341_GREEN);
-  LCD.setCursor(260, 5);
-  LCD.setTextSize(1);
-  LCD.printf("%.1f FPS", fps);
   
   // Show frame counter
-  LCD.fillRect(0, 0, 100, 20, ILI9341_BLACK);
-  LCD.setCursor(5, 5);
-  LCD.printf("Frm:%lu", frameCounter);
+  LCD.fillRect(110, 0, 50, 25, ILI9341_BLACK);
+  LCD.setCursor(5, 18); LCD.printf("Video Frame:%lu", frameCounter);
+
+  // Show FPS in corner
+  LCD.fillRect(225, 0, 30, 25, ILI9341_BLACK);
+  LCD.setTextColor(ILI9341_GREEN); LCD.setTextSize(1);
+  LCD.setCursor(230, 18);  LCD.printf("%.1f FPS", fps);
+  
 }
 
 // ----------------------------------------------------------
@@ -575,7 +776,7 @@ void error_log(const char *msg, uint16_t color) {
   LCD.fillRect(0, 210, 320, 30, ILI9341_BLACK);
   LCD.setTextColor(color);
   LCD.setCursor(10, 220);
-  LCD.setTextSize(2);
+  LCD.setTextSize(1);
   LCD.print(msg);
 }
 
@@ -589,7 +790,7 @@ void initializeOTA() {
         .onEnd([]() { otaFinished = true;}) 
         .onProgress([](unsigned int progress, unsigned int total) {
            // snprintf(ota_log, sizeof(ota_log), "Progress: %u%%", (progress * 100) / total);
-           // flash(now_now_ms, blinker, 50, 50, 0, 0);
+           // flash(now_now_ms, flash, 50, 50, 0, 0);
         })
         .onError([](ota_error_t error) { otaError = true;
             snprintf(ota_log, sizeof(ota_log), "Error[%u]: ", error);
