@@ -1,7 +1,7 @@
 #ifndef CREDENTIALS_H
 #define CREDENTIALS_H
 
-// Structure for WiFi credentials
+// Caviscope WiFi credentials
 struct WiFiCred {
   const char* SECRET_SSID;
   const char* SECRET_PASS;
@@ -9,12 +9,15 @@ struct WiFiCred {
 
 // List of known WiFi networks
 const WiFiCred knownNetworks[] = {
-  {"IntelliSys Air", "intel_cool@2025!"}, 
-  {"irrikit_Cloud", "IntelliSys@2025!"},
-  {"iPaul", "longpassword"},
+  {"UCI-RADIOTHERAPY", "Rad@2620_!"},
+  {"uci bunkerboardroom", "uci@1234"},
+  {"Galaxy S22 Ultra CD40", "solomon122"},
+  {"IntelliSys Air", "intel_cool@2025!"},
+  {"IntelliSys Air_5G", "intel_cool@2025!"},
   {"irrikit_Cloud", "IntelliSys@2025!"},
   {"IntelliSys Online", "qwerty0976_"},
-  {"IntelliSys Pro 2025", "intel_cool@2025"}
+  {"IntelliSys Pro 2025", "intel_cool@2025"},
+  {"iPaul", "wrong_pass"}
 };
 
 const int knownCount = sizeof(knownNetworks) / sizeof(knownNetworks[0]);
